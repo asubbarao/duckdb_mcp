@@ -2,6 +2,7 @@
 #include "mcp_instance_state.hpp"
 #include "duckdb_compat.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
 namespace duckdb {
 
@@ -202,25 +203,65 @@ void RegisterMCPStateTableFunctions(ExtensionLoader &loader) {
 	TableFunction mcp_tools("mcp_tools", {}, MCPToolsScan);
 	mcp_tools.bind = MCPToolsBind;
 	mcp_tools.init_global = MCPToolsInit;
-	loader.RegisterFunction(mcp_tools);
+	{
+		CreateTableFunctionInfo info(std::move(mcp_tools));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = {};
+		desc.description = "List registered MCP tools on the embedded server.";
+		desc.examples = {"SELECT * FROM mcp_tools()"};
+		desc.categories = {"mcp"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	}
 
 	// mcp_list_tools() — alias for mcp_tools()
 	TableFunction mcp_list_tools("mcp_list_tools", {}, MCPToolsScan);
 	mcp_list_tools.bind = MCPToolsBind;
 	mcp_list_tools.init_global = MCPToolsInit;
-	loader.RegisterFunction(mcp_list_tools);
+	{
+		CreateTableFunctionInfo info(std::move(mcp_list_tools));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = {};
+		desc.description = "List registered MCP tools on the embedded server (alias for mcp_tools).";
+		desc.examples = {"SELECT * FROM mcp_list_tools()"};
+		desc.categories = {"mcp"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	}
 
 	// mcp_resources()
 	TableFunction mcp_resources("mcp_resources", {}, MCPResourcesScan);
 	mcp_resources.bind = MCPResourcesBind;
 	mcp_resources.init_global = MCPResourcesInit;
-	loader.RegisterFunction(mcp_resources);
+	{
+		CreateTableFunctionInfo info(std::move(mcp_resources));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = {};
+		desc.description = "List registered MCP resources on the embedded server.";
+		desc.examples = {"SELECT * FROM mcp_resources()"};
+		desc.categories = {"mcp"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	}
 
 	// mcp_server_config()
 	TableFunction mcp_server_config("mcp_server_config", {}, MCPServerConfigScan);
 	mcp_server_config.bind = MCPServerConfigBind;
 	mcp_server_config.init_global = MCPServerConfigInit;
-	loader.RegisterFunction(mcp_server_config);
+	{
+		CreateTableFunctionInfo info(std::move(mcp_server_config));
+		info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+		FunctionDescription desc;
+		desc.parameter_names = {};
+		desc.description = "Get configuration key-value pairs of the embedded MCP server.";
+		desc.examples = {"SELECT * FROM mcp_server_config()"};
+		desc.categories = {"mcp"};
+		info.descriptions.push_back(desc);
+		loader.RegisterFunction(std::move(info));
+	}
 }
 
 } // namespace duckdb

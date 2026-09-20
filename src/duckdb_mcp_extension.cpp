@@ -33,6 +33,7 @@ using namespace duckdb_yyjson;
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/function/pragma_function.hpp"
 #include "duckdb/function/function_set.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/config.hpp"
 
@@ -2046,11 +2047,46 @@ enum class ScalarErrors : uint8_t {
 
 //! Register a scalar function, having stated whether it can raise an execution
 //! error. Use this rather than loader.RegisterFunction for every ScalarFunction.
-static void RegisterScalar(ExtensionLoader &loader, ScalarFunction function, ScalarErrors errors) {
+static void RegisterScalar(ExtensionLoader &loader, ScalarFunction function, ScalarErrors errors,
+                           const vector<string> &param_names = {}, const string &desc_str = "",
+                           const string &example_str = "") {
 	if (errors == ScalarErrors::CAN_THROW) {
 		CompatSetFallible(function);
 	}
-	loader.RegisterFunction(function);
+	CreateScalarFunctionInfo info(std::move(function));
+	info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+	if (!desc_str.empty()) {
+		FunctionDescription desc;
+		desc.parameter_names = param_names;
+		desc.description = desc_str;
+		if (!example_str.empty()) {
+			desc.examples = {example_str};
+		}
+		desc.categories = {"mcp"};
+		info.descriptions.push_back(desc);
+	}
+	loader.RegisterFunction(std::move(info));
+}
+
+static void RegisterScalarSet(ExtensionLoader &loader, ScalarFunctionSet function_set, ScalarErrors errors,
+                              const vector<string> &param_names = {}, const string &desc_str = "",
+                              const string &example_str = "") {
+	if (errors == ScalarErrors::CAN_THROW) {
+		CompatSetFallible(function_set);
+	}
+	CreateScalarFunctionInfo info(std::move(function_set));
+	info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+	if (!desc_str.empty()) {
+		FunctionDescription desc;
+		desc.parameter_names = param_names;
+		desc.description = desc_str;
+		if (!example_str.empty()) {
+			desc.examples = {example_str};
+		}
+		desc.categories = {"mcp"};
+		info.descriptions.push_back(desc);
+	}
+	loader.RegisterFunction(std::move(info));
 }
 
 static void LoadInternal(ExtensionLoader &loader) {
@@ -2120,94 +2156,114 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Register client-side MCP functions (require MCPConnectionRegistry)
 	auto get_resource_func = ScalarFunction("mcp_get_resource", {LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                                        LogicalType::JSON(), MCPGetResourceFunction);
-	RegisterScalar(loader, get_resource_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, get_resource_func, ScalarErrors::SWALLOWS_ALL, {"server_name", "resource_uri"},
+	               "Get content of a resource from an attached MCP server.",
+	               "mcp_get_resource('server', 'resource://uri')");
 
-	auto list_resources_func_simple =
-	    ScalarFunction("mcp_list_resources", {LogicalType::VARCHAR}, LogicalType::JSON(), MCPListResourcesFunction);
-	auto list_resources_func_cursor = ScalarFunction("mcp_list_resources", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                                                 LogicalType::JSON(), MCPListResourcesWithCursorFunction);
-	RegisterScalar(loader, list_resources_func_simple, ScalarErrors::SWALLOWS_ALL);
-	RegisterScalar(loader, list_resources_func_cursor, ScalarErrors::SWALLOWS_ALL);
+	ScalarFunctionSet list_resources_set("mcp_list_resources");
+	list_resources_set.AddFunction(
+	    ScalarFunction({LogicalType::VARCHAR}, LogicalType::JSON(), MCPListResourcesFunction));
+	list_resources_set.AddFunction(ScalarFunction({LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::JSON(),
+	                                              MCPListResourcesWithCursorFunction));
+	RegisterScalarSet(loader, list_resources_set, ScalarErrors::SWALLOWS_ALL, {"server_name", "cursor"},
+	                  "List available resources from an attached MCP server.", "mcp_list_resources('server')");
 
 	auto call_tool_func =
 	    ScalarFunction("mcp_call_tool", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                   LogicalType::JSON(), MCPCallToolFunction);
-	RegisterScalar(loader, call_tool_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, call_tool_func, ScalarErrors::SWALLOWS_ALL, {"server_name", "tool_name", "params_json"},
+	               "Call a tool provided by an attached MCP server.",
+	               "mcp_call_tool('server', 'tool_name', '{\"arg\": 1}')");
 
-	auto list_tools_func_simple =
-	    ScalarFunction("mcp_list_tools", {LogicalType::VARCHAR}, LogicalType::JSON(), MCPListToolsFunction);
-	auto list_tools_func_cursor = ScalarFunction("mcp_list_tools", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                                             LogicalType::JSON(), MCPListToolsWithCursorFunction);
-	RegisterScalar(loader, list_tools_func_simple, ScalarErrors::SWALLOWS_ALL);
-	RegisterScalar(loader, list_tools_func_cursor, ScalarErrors::SWALLOWS_ALL);
+	ScalarFunctionSet list_tools_set("mcp_list_tools");
+	list_tools_set.AddFunction(ScalarFunction({LogicalType::VARCHAR}, LogicalType::JSON(), MCPListToolsFunction));
+	list_tools_set.AddFunction(ScalarFunction({LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::JSON(),
+	                                          MCPListToolsWithCursorFunction));
+	RegisterScalarSet(loader, list_tools_set, ScalarErrors::SWALLOWS_ALL, {"server_name", "cursor"},
+	                  "List available tools from an attached MCP server.", "mcp_list_tools('server')");
 
-	auto list_prompts_func_simple =
-	    ScalarFunction("mcp_list_prompts", {LogicalType::VARCHAR}, LogicalType::JSON(), MCPListPromptsFunction);
-	auto list_prompts_func_cursor = ScalarFunction("mcp_list_prompts", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                                               LogicalType::JSON(), MCPListPromptsWithCursorFunction);
-	RegisterScalar(loader, list_prompts_func_simple, ScalarErrors::SWALLOWS_ALL);
-	RegisterScalar(loader, list_prompts_func_cursor, ScalarErrors::SWALLOWS_ALL);
+	ScalarFunctionSet list_prompts_set("mcp_list_prompts");
+	list_prompts_set.AddFunction(ScalarFunction({LogicalType::VARCHAR}, LogicalType::JSON(), MCPListPromptsFunction));
+	list_prompts_set.AddFunction(ScalarFunction({LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::JSON(),
+	                                            MCPListPromptsWithCursorFunction));
+	RegisterScalarSet(loader, list_prompts_set, ScalarErrors::SWALLOWS_ALL, {"server_name", "cursor"},
+	                  "List available prompt templates from an attached MCP server.", "mcp_list_prompts('server')");
 
 	auto get_prompt_func =
 	    ScalarFunction("mcp_get_prompt", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                   LogicalType::JSON(), MCPGetPromptFunction);
-	RegisterScalar(loader, get_prompt_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, get_prompt_func, ScalarErrors::SWALLOWS_ALL, {"server_name", "prompt_name", "params_json"},
+	               "Get a rendered prompt template from an attached MCP server.",
+	               "mcp_get_prompt('server', 'prompt_name', '{\"arg\": 1}')");
 
 	auto reconnect_func = ScalarFunction("mcp_reconnect_server", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
 	                                     MCPReconnectServerFunction);
-	RegisterScalar(loader, reconnect_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, reconnect_func, ScalarErrors::SWALLOWS_ALL, {"server_name"},
+	               "Reconnect to an attached MCP server.", "mcp_reconnect_server('server')");
 
 	auto health_func =
 	    ScalarFunction("mcp_server_health", {LogicalType::VARCHAR}, LogicalType::VARCHAR, MCPServerHealthFunction);
-	RegisterScalar(loader, health_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, health_func, ScalarErrors::SWALLOWS_ALL, {"server_name"},
+	               "Check the health and connection status of an attached MCP server.", "mcp_server_health('server')");
 #endif // !__EMSCRIPTEN__
 
 	// Server-side functions (work via memory transport in WASM)
 	LogicalType mcp_status_type = GetMCPStatusType();
 
-	// mcp_server_start(transport) - simplest form for stdio
+	// mcp_server_start
+	ScalarFunctionSet server_start_set("mcp_server_start");
 	auto server_start_simple_func =
-	    ScalarFunction("mcp_server_start", {LogicalType::VARCHAR}, mcp_status_type, MCPServerStartSimpleFunction);
+	    ScalarFunction({LogicalType::VARCHAR}, mcp_status_type, MCPServerStartSimpleFunction);
 	PreventStructConstantFolding(server_start_simple_func);
-	RegisterScalar(loader, server_start_simple_func, ScalarErrors::SWALLOWS_ALL);
+	server_start_set.AddFunction(server_start_simple_func);
 
-	// mcp_server_start(transport, config_json) - with config for stdio
-	auto server_start_config_func = ScalarFunction("mcp_server_start", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                                               mcp_status_type, MCPServerStartConfigFunction);
+	auto server_start_config_func =
+	    ScalarFunction({LogicalType::VARCHAR, LogicalType::VARCHAR}, mcp_status_type, MCPServerStartConfigFunction);
 	PreventStructConstantFolding(server_start_config_func);
-	RegisterScalar(loader, server_start_config_func, ScalarErrors::SWALLOWS_ALL);
+	server_start_set.AddFunction(server_start_config_func);
 
-	// mcp_server_start(transport, bind_address, port, config_json) - full form
-	auto server_start_func = ScalarFunction(
-	    "mcp_server_start", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::INTEGER, LogicalType::VARCHAR},
-	    mcp_status_type, MCPServerStartFunction);
+	auto server_start_func =
+	    ScalarFunction({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::INTEGER, LogicalType::VARCHAR},
+	                   mcp_status_type, MCPServerStartFunction);
 	PreventStructConstantFolding(server_start_func);
-	RegisterScalar(loader, server_start_func, ScalarErrors::SWALLOWS_ALL);
+	server_start_set.AddFunction(server_start_func);
 
-	auto server_stop_func = ScalarFunction("mcp_server_stop", {}, mcp_status_type, MCPServerStopFunction);
+	RegisterScalarSet(loader, server_start_set, ScalarErrors::SWALLOWS_ALL,
+	                  {"transport", "bind_address", "port", "config_json"}, "Start the embedded MCP server.",
+	                  "mcp_server_start('stdio')");
+
+	// mcp_server_stop
+	ScalarFunctionSet server_stop_set("mcp_server_stop");
+	auto server_stop_func = ScalarFunction({}, mcp_status_type, MCPServerStopFunction);
 	PreventStructConstantFolding(server_stop_func);
-	RegisterScalar(loader, server_stop_func, ScalarErrors::SWALLOWS_ALL);
+	server_stop_set.AddFunction(server_stop_func);
 
-	// mcp_server_stop(force) - with force option for test setup/teardown
-	auto server_stop_force_func =
-	    ScalarFunction("mcp_server_stop", {LogicalType::BOOLEAN}, mcp_status_type, MCPServerStopForceFunction);
+	auto server_stop_force_func = ScalarFunction({LogicalType::BOOLEAN}, mcp_status_type, MCPServerStopForceFunction);
 	PreventStructConstantFolding(server_stop_force_func);
-	RegisterScalar(loader, server_stop_force_func, ScalarErrors::SWALLOWS_ALL);
+	server_stop_set.AddFunction(server_stop_force_func);
+
+	RegisterScalarSet(loader, server_stop_set, ScalarErrors::SWALLOWS_ALL, {"force"}, "Stop the embedded MCP server.",
+	                  "mcp_server_stop()");
 
 	auto server_status_func = ScalarFunction("mcp_server_status", {}, mcp_status_type, MCPServerStatusFunction);
 	PreventStructConstantFolding(server_status_func);
-	RegisterScalar(loader, server_status_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, server_status_func, ScalarErrors::SWALLOWS_ALL, {},
+	               "Get the current running status and statistics of the embedded MCP server.", "mcp_server_status()");
 
 	// Register MCP server test function (for unit testing protocol handling)
 	auto server_test_func =
 	    ScalarFunction("mcp_server_test", {LogicalType::VARCHAR}, LogicalType::VARCHAR, MCPServerTestFunction);
-	RegisterScalar(loader, server_test_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, server_test_func, ScalarErrors::SWALLOWS_ALL, {"request_json"},
+	               "Test MCP server protocol handling with a raw JSON-RPC request.",
+	               "mcp_server_test('{\"jsonrpc\": \"2.0\", \"method\": \"ping\", \"id\": 1}')");
 
 	// Register MCP server send request function - sends request to running server
 	// mcp_server_send_request(request_json) - requires server to be started first
 	auto send_request_func = ScalarFunction("mcp_server_send_request", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
 	                                        MCPServerSendRequestFunction);
-	RegisterScalar(loader, send_request_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, send_request_func, ScalarErrors::SWALLOWS_ALL, {"request_json"},
+	               "Send a JSON-RPC request to the running embedded MCP server.",
+	               "mcp_server_send_request('{\"jsonrpc\": \"2.0\", \"method\": \"tools/list\", \"id\": 1}')");
 
 	// Register resource publishing functions
 	// Note: We use SPECIAL_HANDLING to allow NULL uri/format parameters (which have defaults)
@@ -2215,13 +2271,17 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    ScalarFunction("mcp_publish_table", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                   LogicalType::VARCHAR, MCPPublishTableFunction);
 	SetScalarFunctionNullHandling(publish_table_func, FunctionNullHandling::SPECIAL_HANDLING);
-	RegisterScalar(loader, publish_table_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, publish_table_func, ScalarErrors::SWALLOWS_ALL, {"table_name", "uri", "description"},
+	               "Publish a DuckDB table or view as an MCP resource.",
+	               "mcp_publish_table('my_table', 'resource://my_table', 'My data table')");
 
 	auto publish_query_func = ScalarFunction(
 	    "mcp_publish_query", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::INTEGER},
 	    LogicalType::VARCHAR, MCPPublishQueryFunction);
 	SetScalarFunctionNullHandling(publish_query_func, FunctionNullHandling::SPECIAL_HANDLING);
-	RegisterScalar(loader, publish_query_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, publish_query_func, ScalarErrors::SWALLOWS_ALL,
+	               {"name", "query", "description", "ttl_seconds"}, "Publish a DuckDB SQL query as an MCP resource.",
+	               "mcp_publish_query('top_users', 'SELECT * FROM users LIMIT 10', 'Top 10 users', 300)");
 
 	// mcp_publish_resource(uri, content, mime_type, description)
 	auto publish_resource_func =
@@ -2229,62 +2289,78 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                   {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                   LogicalType::VARCHAR, MCPPublishResourceFunction);
 	SetScalarFunctionNullHandling(publish_resource_func, FunctionNullHandling::SPECIAL_HANDLING);
-	RegisterScalar(loader, publish_resource_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, publish_resource_func, ScalarErrors::SWALLOWS_ALL,
+	               {"uri", "content", "mime_type", "description"},
+	               "Publish static text or JSON content as an MCP resource.",
+	               "mcp_publish_resource('resource://docs', 'Documentation text', 'text/plain', 'Doc resource')");
 
 	// Register tool publishing functions
-	// mcp_publish_tool(name, description, sql_template, properties_json, required_json)
+	ScalarFunctionSet publish_tool_set("mcp_publish_tool");
 	auto publish_tool_func = ScalarFunction(
-	    "mcp_publish_tool",
 	    {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
 	    LogicalType::VARCHAR, MCPPublishToolFunction);
 	SetScalarFunctionNullHandling(publish_tool_func, FunctionNullHandling::SPECIAL_HANDLING);
-	RegisterScalar(loader, publish_tool_func, ScalarErrors::SWALLOWS_ALL);
+	publish_tool_set.AddFunction(publish_tool_func);
 
-	// mcp_publish_tool(name, description, sql_template, properties_json, required_json, format)
-	auto publish_tool_format_func = ScalarFunction("mcp_publish_tool",
-	                                               {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+	auto publish_tool_format_func = ScalarFunction({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                                                LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                                               LogicalType::VARCHAR, MCPPublishToolWithFormatFunction);
 	SetScalarFunctionNullHandling(publish_tool_format_func, FunctionNullHandling::SPECIAL_HANDLING);
-	RegisterScalar(loader, publish_tool_format_func, ScalarErrors::SWALLOWS_ALL);
+	publish_tool_set.AddFunction(publish_tool_format_func);
+
+	RegisterScalarSet(loader, publish_tool_set, ScalarErrors::SWALLOWS_ALL,
+	                  {"name", "description", "sql_template", "properties_json", "required_json", "format"},
+	                  "Publish a parameterized SQL query as an MCP tool.",
+	                  "mcp_publish_tool('get_user', 'Get user by ID', 'SELECT * FROM users WHERE id = $id', '{\"id\": "
+	                  "{\"type\": \"integer\"}}', '[\"id\"]')");
 
 	// Register execution tool publishing functions
-	// mcp_publish_execution_tool(name, description, sql_template, properties_json, required_json, bindings_json)
-	auto publish_exec_tool_func = ScalarFunction("mcp_publish_execution_tool",
-	                                             {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+	ScalarFunctionSet publish_exec_tool_set("mcp_publish_execution_tool");
+	auto publish_exec_tool_func = ScalarFunction({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                                              LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                                             LogicalType::VARCHAR, MCPPublishExecutionToolFunction);
 	SetScalarFunctionNullHandling(publish_exec_tool_func, FunctionNullHandling::SPECIAL_HANDLING);
-	RegisterScalar(loader, publish_exec_tool_func, ScalarErrors::SWALLOWS_ALL);
+	publish_exec_tool_set.AddFunction(publish_exec_tool_func);
 
-	// mcp_publish_execution_tool(name, description, sql_template, properties_json, required_json, bindings_json,
-	// format)
 	auto publish_exec_tool_format_func =
-	    ScalarFunction("mcp_publish_execution_tool",
-	                   {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+	    ScalarFunction({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                    LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                   LogicalType::VARCHAR, MCPPublishExecutionToolWithFormatFunction);
 	SetScalarFunctionNullHandling(publish_exec_tool_format_func, FunctionNullHandling::SPECIAL_HANDLING);
-	RegisterScalar(loader, publish_exec_tool_format_func, ScalarErrors::SWALLOWS_ALL);
+	publish_exec_tool_set.AddFunction(publish_exec_tool_format_func);
+
+	RegisterScalarSet(
+	    loader, publish_exec_tool_set, ScalarErrors::SWALLOWS_ALL,
+	    {"name", "description", "sql_template", "properties_json", "required_json", "bindings_json", "format"},
+	    "Publish an execution tool that runs SQL queries against DuckDB with parameter bindings.",
+	    "mcp_publish_execution_tool('exec_query', 'Execute parameterized query', 'SELECT $val', '{\"val\": {\"type\": "
+	    "\"string\"}}', '[\"val\"]', '{\"val\": \"VARCHAR\"}')");
 
 	// Register MCP template functions
 	auto register_prompt_template_func = ScalarFunction(
 	    "mcp_register_prompt_template", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
 	    LogicalType::VARCHAR, MCPRegisterPromptTemplateFunction);
-	RegisterScalar(loader, register_prompt_template_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, register_prompt_template_func, ScalarErrors::SWALLOWS_ALL,
+	               {"name", "description", "template"},
+	               "Register a prompt template with parameters for the MCP server.",
+	               "mcp_register_prompt_template('greeting', 'Greeting prompt', 'Hello {{name}}!')");
 
 	auto list_prompt_templates_func =
 	    ScalarFunction("mcp_list_prompt_templates", {}, LogicalType::JSON(), MCPListPromptTemplatesFunction);
-	RegisterScalar(loader, list_prompt_templates_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, list_prompt_templates_func, ScalarErrors::SWALLOWS_ALL, {},
+	               "List all registered prompt templates.", "mcp_list_prompt_templates()");
 
 	auto render_prompt_template_func =
 	    ScalarFunction("mcp_render_prompt_template", {LogicalType::VARCHAR, LogicalType::JSON()}, LogicalType::VARCHAR,
 	                   MCPRenderPromptTemplateFunction);
-	RegisterScalar(loader, render_prompt_template_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, render_prompt_template_func, ScalarErrors::SWALLOWS_ALL, {"name", "arguments_json"},
+	               "Render a registered prompt template with arguments.",
+	               "mcp_render_prompt_template('greeting', '{\"name\": \"Alice\"}')");
 
 	// Register MCP diagnostics functions
 	auto diagnostics_func = ScalarFunction("mcp_get_diagnostics", {}, LogicalType::JSON(), MCPGetDiagnosticsFunction);
-	RegisterScalar(loader, diagnostics_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, diagnostics_func, ScalarErrors::SWALLOWS_ALL, {},
+	               "Get internal diagnostics and connection states for the MCP extension.", "mcp_get_diagnostics()");
 
 	// ========================================================================
 	// Register PRAGMA functions (side-effectful functions that produce no output)
@@ -2372,12 +2448,15 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// mcp_webmcp_sync() - re-sync tools with navigator.modelContext after publishing new tools/resources
 	auto webmcp_sync_func = ScalarFunction("mcp_webmcp_sync", {}, LogicalType::VARCHAR, MCPWebMCPSyncFunction);
-	RegisterScalar(loader, webmcp_sync_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, webmcp_sync_func, ScalarErrors::SWALLOWS_ALL, {},
+	               "Re-sync tools with navigator.modelContext in WebAssembly environment.", "mcp_webmcp_sync()");
 
 	// webmcp_list_page_tools() - list tools registered by other page scripts
 	auto webmcp_list_page_tools_func =
 	    ScalarFunction("webmcp_list_page_tools", {}, LogicalType::JSON(), WebMCPListPageToolsFunction);
-	RegisterScalar(loader, webmcp_list_page_tools_func, ScalarErrors::SWALLOWS_ALL);
+	RegisterScalar(loader, webmcp_list_page_tools_func, ScalarErrors::SWALLOWS_ALL, {},
+	               "List tools registered by other page scripts in WebAssembly environment.",
+	               "webmcp_list_page_tools()");
 #endif // __EMSCRIPTEN__
 }
 
