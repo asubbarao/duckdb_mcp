@@ -208,10 +208,6 @@ bool MCPServer::StartForeground() {
 }
 
 void MCPServer::Stop() {
-	if (!running.load()) {
-		return;
-	}
-
 	running = false;
 
 #ifdef __EMSCRIPTEN__
@@ -362,6 +358,10 @@ HTTPServerConfig MCPServer::MakeHTTPConfig() const {
 	http_config.cors_origins = config.cors_origins;
 	http_config.enable_health_endpoint = config.enable_health_endpoint;
 	http_config.auth_health_endpoint = config.auth_health_endpoint;
+	http_config.max_connections = config.max_connections;
+	http_config.http_io_timeout_seconds = config.http_io_timeout_seconds;
+	http_config.max_request_bytes = config.max_request_bytes;
+	http_config.max_response_bytes = config.max_response_bytes;
 
 	if (config.transport == "https") {
 		http_config.use_ssl = true;
@@ -377,6 +377,7 @@ HTTPServerTransport::RequestHandler MCPServer::MakeHTTPHandler() {
 		try {
 			MCPMessage request = MCPMessage::FromJSON(request_json);
 			MCPMessage response = ProcessRequest(request);
+			if (request.IsNotification()) { return ""; }
 			return response.ToJSON();
 		} catch (const std::exception &e) {
 			MCP_LOG_ERROR("HTTP", "Failed to process request: %s", e.what());
@@ -485,7 +486,20 @@ MCPMessage MCPServer::HandleRequest(const MCPMessage &request) {
 		}
 
 		// Route request based on method
-		if (request.method == MCPMethods::INITIALIZE) {
+		if (request.method == "server/discover") {
+			Value info = Value::STRUCT({{"name", Value("DuckDB MCP Server")}, {"version", Value(DUCKDB_MCP_VERSION)}});
+			Value capabilities = Value::STRUCT({{"tools", Value::STRUCT({{"listChanged", Value(false)}})},
+			                                   {"resources", Value::STRUCT({{"subscribe", Value(false)}})},
+			                                   {"prompts", Value::STRUCT({{"listChanged", Value(false)}})}});
+			return MCPMessage::CreateResponse(Value::STRUCT({
+			    {"resultType", Value("complete")},
+			    {"supportedVersions", Value::LIST(LogicalType::VARCHAR, {Value("2026-07-28"), Value("2025-11-25"),
+			        Value("2025-06-18"), Value("2025-03-26"), Value("2024-11-05")})},
+			    {"capabilities", capabilities},
+			    {"_meta", Value::STRUCT({{"io.modelcontextprotocol/serverInfo", info}})}}), request.id);
+		} else if (request.method == "ping") {
+			return MCPMessage::CreateResponse(Value::STRUCT({}), request.id);
+		} else if (request.method == MCPMethods::INITIALIZE) {
 			return HandleInitialize(request);
 		} else if (request.method == MCPMethods::RESOURCES_LIST) {
 			return HandleResourcesList(request);
@@ -555,15 +569,15 @@ MCPMessage MCPServer::HandleInitialize(const MCPMessage &request) {
 	// See: https://modelcontextprotocol.io/specification/2024-11-05/basic/lifecycle
 	Value resources_cap = Value::STRUCT({
 	    {"subscribe", Value::BOOLEAN(false)}, // We don't support resource subscriptions yet
-	    {"listChanged", Value::BOOLEAN(true)} // We can notify when resource list changes
+	    {"listChanged", Value::BOOLEAN(false)}
 	});
 
 	Value tools_cap = Value::STRUCT({
-	    {"listChanged", Value::BOOLEAN(true)} // We can notify when tool list changes
+	    {"listChanged", Value::BOOLEAN(false)}
 	});
 
 	Value prompts_cap = Value::STRUCT({
-	    {"listChanged", Value::BOOLEAN(true)} // We can notify when prompt list changes
+	    {"listChanged", Value::BOOLEAN(false)}
 	});
 
 	Value capabilities = Value::STRUCT({{"resources", resources_cap}, {"tools", tools_cap}, {"prompts", prompts_cap}});
@@ -571,8 +585,14 @@ MCPMessage MCPServer::HandleInitialize(const MCPMessage &request) {
 	Value server_info = Value::STRUCT({{"name", Value("DuckDB MCP Server")}, {"version", Value(DUCKDB_MCP_VERSION)}});
 
 	// MCP initialize response requires protocolVersion, serverInfo, and capabilities at top level
+	JSONArgumentParser parser;
+	parser.Parse(request.params);
+	auto version = parser.GetString("protocolVersion");
+	if (version != "2024-11-05" && version != "2025-03-26" && version != "2025-06-18" && version != "2025-11-25") {
+		version = "2025-11-25";
+	}
 	Value result = Value::STRUCT(
-	    {{"protocolVersion", Value("2024-11-05")}, {"serverInfo", server_info}, {"capabilities", capabilities}});
+	    {{"protocolVersion", Value(version)}, {"serverInfo", server_info}, {"capabilities", capabilities}});
 
 	return MCPMessage::CreateResponse(result, request.id);
 }
@@ -669,6 +689,7 @@ MCPMessage MCPServer::HandleToolsList(const MCPMessage &request) {
 	tool_struct_members.push_back({"name", LogicalType::VARCHAR});
 	tool_struct_members.push_back({"description", LogicalType::VARCHAR});
 	tool_struct_members.push_back({"inputSchema", LogicalType::JSON()});
+	tool_struct_members.push_back({"annotations", LogicalType::JSON()});
 	LogicalType tool_struct_type = LogicalType::STRUCT(tool_struct_members);
 
 	for (const auto &name : tool_names) {
@@ -689,7 +710,10 @@ MCPMessage MCPServer::HandleToolsList(const MCPMessage &request) {
 
 			Value tool = Value::STRUCT({{"name", Value(name)},
 			                            {"description", Value(handler->GetDescription())},
-			                            {"inputSchema", schema_json_val}});
+			                            {"inputSchema", schema_json_val},
+			                            {"annotations", CompatWithType(Value(handler->IsReadOnly() ?
+			                                "{\"readOnlyHint\":true,\"destructiveHint\":false,\"idempotentHint\":true,\"openWorldHint\":true}" :
+			                                "{\"readOnlyHint\":false,\"destructiveHint\":true,\"idempotentHint\":false,\"openWorldHint\":true}"), LogicalType::JSON())}});
 			tools.push_back(tool);
 		}
 	}
@@ -750,9 +774,6 @@ MCPMessage MCPServer::HandleToolsCall(const MCPMessage &request) {
 	}
 
 	auto call_result = handler->Execute(arguments);
-	if (!call_result.success) {
-		return CreateErrorResponse(request.id, MCPErrorCodes::INVALID_TOOL_INPUT, call_result.error_message);
-	}
 
 	// Build content list with proper struct type
 	child_list_t<LogicalType> content_struct_members;
@@ -760,9 +781,13 @@ MCPMessage MCPServer::HandleToolsCall(const MCPMessage &request) {
 	content_struct_members.push_back({"text", LogicalType::VARCHAR});
 	LogicalType content_struct_type = LogicalType::STRUCT(content_struct_members);
 
-	Value content_item = Value::STRUCT({{"type", Value("text")}, {"text", call_result.result}});
+	// Tool failures are successful JSON-RPC responses with isError, but retain an
+	// explicit error marker in the content for clients that render only text.
+	Value content_item = Value::STRUCT({{"type", Value("text")},
+	    {"text", call_result.success ? call_result.result : Value("Tool error: " + call_result.error_message)}});
 
-	Value result = Value::STRUCT({{"content", Value::LIST(content_struct_type, {content_item})}});
+	Value result = Value::STRUCT({{"content", Value::LIST(content_struct_type, {content_item})},
+	                             {"isError", Value(!call_result.success)}});
 
 	return MCPMessage::CreateResponse(result, request.id);
 }
@@ -770,6 +795,9 @@ MCPMessage MCPServer::HandleToolsCall(const MCPMessage &request) {
 MCPMessage MCPServer::HandleShutdown(const MCPMessage &request) {
 	// Gracefully shut down the server
 	running = false;
+#ifndef __EMSCRIPTEN__
+	if (http_server) { http_server->RequestStop(); }
+#endif
 
 	Value result = Value::STRUCT({{"status", Value("shutting down")}, {"message", Value("Server shutdown initiated")}});
 
@@ -777,6 +805,26 @@ MCPMessage MCPServer::HandleShutdown(const MCPMessage &request) {
 }
 
 void MCPServer::RegisterBuiltinTools() {
+	if (config.enable_hostfs_tools) {
+		Connection conn(*config.db_instance);
+		auto loaded = conn.Query("LOAD hostfs");
+		if (loaded->HasError()) { throw InvalidInputException(loaded->GetError()); }
+		for (const auto &name : {"hostfs", "is_file", "is_dir", "file_name", "file_extension", "file_size",
+		                         "absolute_path", "path_exists", "path_type", "file_last_modified"}) {
+			auto handler = make_shared_ptr<HostFSToolHandler>(*config.db_instance, name, "path", "VARCHAR");
+			tool_registry.RegisterTool(handler->GetName(), handler);
+		}
+		for (const auto &name : {"pwd", "path_separator"}) {
+			auto handler = make_shared_ptr<HostFSToolHandler>(*config.db_instance, name, "", "");
+			tool_registry.RegisterTool(handler->GetName(), handler);
+		}
+		auto handler = make_shared_ptr<HostFSToolHandler>(*config.db_instance, "hsize", "bytes", "HUGEINT");
+		tool_registry.RegisterTool(handler->GetName(), handler);
+	}
+	if (config.enable_quack_query_tool) {
+		tool_registry.RegisterTool("quack_query", make_shared_ptr<QuackQueryToolHandler>(
+		    *config.db_instance, config.quack_result_max_rows, config.max_response_bytes / 4));
+	}
 	if (config.enable_query_tool) {
 		auto query_tool = make_shared_ptr<QueryToolHandler>(*config.db_instance, config.allowed_queries,
 		                                                    config.denied_queries, config.default_result_format);
@@ -851,7 +899,7 @@ bool MCPServerManager::StartServer(const MCPServerConfig &config, vector<Registr
 		return false; // Server already running
 	}
 
-	server = make_uniq<MCPServer>(config);
+	server = make_shared_ptr<MCPServer>(config);
 	bool started = server->Start();
 
 	if (started) {
@@ -869,12 +917,19 @@ bool MCPServerManager::StartServer(const MCPServerConfig &config, vector<Registr
 }
 
 void MCPServerManager::StopServer() {
-	lock_guard<mutex> lock(manager_mutex);
-
-	if (server) {
-		server->Stop();
-		server.reset();
+	shared_ptr<MCPServer> stopping;
+	{
+		lock_guard<mutex> lock(manager_mutex);
+		stopping = std::move(server);
 	}
+	if (stopping) { stopping->Stop(); }
+}
+
+void MCPServerManager::WaitForServer() {
+#ifndef __EMSCRIPTEN__
+	while (IsServerRunning()) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); }
+	StopServer();
+#endif
 }
 
 bool MCPServerManager::IsServerRunning() const {
@@ -883,13 +938,15 @@ bool MCPServerManager::IsServerRunning() const {
 }
 
 MCPMessage MCPServerManager::SendRequest(const MCPMessage &request) {
-	lock_guard<mutex> lock(manager_mutex);
-
-	if (!server) {
+	shared_ptr<MCPServer> target;
+	{
+		lock_guard<mutex> lock(manager_mutex);
+		target = server;
+	}
+	if (!target) {
 		return MCPMessage::CreateError(MCPErrorCodes::INTERNAL_ERROR, "No server running", request.id);
 	}
-
-	return server->ProcessRequest(request);
+	return target->ProcessRequest(request);
 }
 
 bool MCPServerManager::PublishResource(const string &uri, shared_ptr<ResourceProvider> provider) {

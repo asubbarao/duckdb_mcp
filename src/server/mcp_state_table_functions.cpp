@@ -154,7 +154,13 @@ static vector<pair<string, string>> ConfigToKVPairs(const MCPServerConfig &confi
 	pairs.emplace_back("auth_health_endpoint", config.auth_health_endpoint ? "true" : "false");
 	pairs.emplace_back("default_result_format", config.default_result_format);
 	pairs.emplace_back("max_connections", to_string(config.max_connections));
-	pairs.emplace_back("request_timeout_seconds", to_string(config.request_timeout_seconds));
+	pairs.emplace_back("http_io_timeout_seconds", to_string(config.http_io_timeout_seconds));
+	pairs.emplace_back("sql_execution_timeout", "none");
+	pairs.emplace_back("max_request_bytes", to_string(config.max_request_bytes));
+	pairs.emplace_back("max_response_bytes", to_string(config.max_response_bytes));
+	pairs.emplace_back("enable_quack_query_tool", config.enable_quack_query_tool ? "true" : "false");
+	pairs.emplace_back("enable_hostfs_tools", config.enable_hostfs_tools ? "true" : "false");
+	pairs.emplace_back("quack_result_max_rows", to_string(config.quack_result_max_rows));
 	pairs.emplace_back("max_requests", to_string(config.max_requests));
 	pairs.emplace_back("require_auth", config.require_auth ? "true" : "false");
 	pairs.emplace_back("allow_direct_requests", config.allow_direct_requests ? "true" : "false");

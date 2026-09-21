@@ -69,6 +69,41 @@ public:
 	virtual string GetName() const = 0;
 	virtual string GetDescription() const = 0;
 	virtual ToolInputSchema GetInputSchema() const = 0;
+	virtual bool IsReadOnly() const { return false; }
+};
+
+class HostFSToolHandler : public ToolHandler {
+public:
+	HostFSToolHandler(DatabaseInstance &db, string function, string argument, string sql_type)
+	    : db_instance(db), function(std::move(function)), argument(std::move(argument)), sql_type(std::move(sql_type)) {}
+	CallToolResult Execute(const Value &arguments) override;
+	string GetName() const override { return "hostfs_" + function; }
+	string GetDescription() const override { return "Call HostFS " + function + " scalar on the system service. Returns its typed SQL value as JSON."; }
+	ToolInputSchema GetInputSchema() const override;
+	bool IsReadOnly() const override { return true; }
+private:
+	DatabaseInstance &db_instance;
+	string function;
+	string argument;
+	string sql_type;
+};
+
+class QuackQueryToolHandler : public ToolHandler {
+public:
+	QuackQueryToolHandler(DatabaseInstance &db, uint32_t max_rows, uint32_t max_bytes)
+	    : db_instance(db), max_rows(max_rows), max_bytes(max_bytes) {}
+	CallToolResult Execute(const Value &arguments) override;
+	string GetName() const override { return "quack_query"; }
+	string GetDescription() const override {
+		return "Execute one complete SQL body on the fixed local Quack service. Each request starts in writable "
+		       "workspace schema. Extensions may be installed and loaded. Errors are preserved; capped output is explicit. "
+		       "No execution deadline or automatic write replay. After a lost connection, inspect state before retrying.";
+	}
+	ToolInputSchema GetInputSchema() const override;
+private:
+	DatabaseInstance &db_instance;
+	uint32_t max_rows;
+	uint32_t max_bytes;
 };
 
 // Query tool handler - executes SQL queries

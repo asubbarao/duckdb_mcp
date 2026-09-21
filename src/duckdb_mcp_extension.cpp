@@ -557,6 +557,21 @@ static Value MCPServerStartCore(ClientContext &context, const string &transport,
 			if (root && yyjson_is_obj(root)) {
 				// Parse max_requests
 				server_config.max_requests = static_cast<uint32_t>(JSONUtils::GetInt(root, "max_requests", 0));
+				if (yyjson_obj_get(root, "request_timeout_seconds")) {
+					throw InvalidInputException("request_timeout_seconds was never enforced; use http_io_timeout_seconds for socket I/O only");
+				}
+				auto bounded_uint = [root](const char *key, uint32_t fallback, uint32_t maximum) {
+					auto value = JSONUtils::GetInt(root, key, fallback);
+					if (value < 1 || value > maximum) { throw InvalidInputException("Invalid bound for %s", key); }
+					return static_cast<uint32_t>(value);
+				};
+				server_config.max_connections = bounded_uint("max_connections", 8, 128);
+				server_config.http_io_timeout_seconds = bounded_uint("http_io_timeout_seconds", 30, 3600);
+				server_config.max_request_bytes = bounded_uint("max_request_bytes", 1048576, 67108864);
+				server_config.max_response_bytes = bounded_uint("max_response_bytes", 8388608, 67108864);
+				server_config.quack_result_max_rows = bounded_uint("quack_result_max_rows", 10000, 1000000);
+				server_config.enable_quack_query_tool = JSONUtils::GetBool(root, "enable_quack_query_tool", false);
+				server_config.enable_hostfs_tools = JSONUtils::GetBool(root, "enable_hostfs_tools", false);
 
 				// Blanket built-in tool switch (issue #75). This is an alias over the
 				// individual enable_*_tool flags below, for the common "publish a
@@ -801,29 +816,14 @@ static Value MCPServerStartCore(ClientContext &context, const string &transport,
 					                       port, true);
 				}
 			} else {
-				// Foreground mode: handle HTTP in calling thread (blocking)
-				MCPServer server(server_config);
-				if (!server.StartForeground()) {
-					return CreateMCPStatus(false, false, "Failed to initialize MCP server", transport, bind_address,
-					                       port, false);
-				}
-				// Apply any pending tool/resource registrations from server_manager
+				// Keep the managed listener visible to status, registration and stop calls.
 				vector<RegistrationFailure> reg_failures;
-				if (!server_manager.ApplyPendingRegistrationsTo(&server, &reg_failures)) {
-					server.Stop();
+				if (!server_manager.StartServer(server_config, &reg_failures)) {
 					return CreateMCPStatus(false, false, StartFailureMessage(reg_failures), transport, bind_address,
 					                       port, false);
 				}
-				try {
-					server.RunHTTPLoop(); // Blocks until Stop() is called or server shuts down
-					return CreateMCPStatus(true, false, "MCP server completed", transport, bind_address, port, false,
-					                       server.GetRequestsReceived(), server.GetResponsesSent(),
-					                       server.GetErrorsReturned());
-				} catch (const std::exception &e) {
-					return CreateMCPStatus(false, false, string(e.what()), transport, bind_address, port, false,
-					                       server.GetRequestsReceived(), server.GetResponsesSent(),
-					                       server.GetErrorsReturned());
-				}
+				server_manager.WaitForServer();
+				return CreateMCPStatus(true, false, "MCP server completed", transport, bind_address, port, false);
 			}
 		}
 #endif // !__EMSCRIPTEN__

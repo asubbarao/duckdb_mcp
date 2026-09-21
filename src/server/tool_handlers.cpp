@@ -10,6 +10,87 @@
 
 namespace duckdb {
 
+ToolInputSchema HostFSToolHandler::GetInputSchema() const {
+	ToolInputSchema schema;
+	if (!argument.empty()) {
+		// Decimal strings preserve all 128 bits accepted by HUGEINT.
+		schema.properties[argument] = Value("string");
+		schema.required_fields = {argument};
+	}
+	return schema;
+}
+
+CallToolResult HostFSToolHandler::Execute(const Value &arguments) {
+	try {
+		JSONArgumentParser parser;
+		if (!parser.Parse(arguments) || (!argument.empty() && !parser.ValidateRequired({argument}))) {
+			return CallToolResult::Error("Missing or invalid HostFS arguments");
+		}
+		Connection conn(db_instance);
+		auto prepared = conn.Prepare("SELECT " + function + "(" +
+		    (argument.empty() ? "" : "CAST(? AS " + sql_type + ")") + ") AS value");
+		if (prepared->HasError()) { return CallToolResult::Error(prepared->GetError()); }
+		vector<Value> parameters;
+		if (!argument.empty()) { parameters.emplace_back(parser.GetString(argument)); }
+		auto result = prepared->Execute(parameters);
+		if (result->HasError()) { return CallToolResult::Error(result->GetError()); }
+		return CallToolResult::Success(Value(ResultFormatter::Format(*result, "json")));
+	} catch (const std::exception &e) { return CallToolResult::Error(e.what()); }
+}
+
+ToolInputSchema QuackQueryToolHandler::GetInputSchema() const {
+	ToolInputSchema schema;
+	schema.properties["sql"] = Value("string");
+	schema.required_fields = {"sql"};
+	return schema;
+}
+
+CallToolResult QuackQueryToolHandler::Execute(const Value &arguments) {
+	try {
+		JSONArgumentParser parser;
+		if (!parser.Parse(arguments) || !parser.ValidateRequired({"sql"}) || parser.GetString("sql").empty()) {
+			return CallToolResult::Error("A nonempty SQL string is required");
+		}
+		Connection conn(db_instance);
+		// A TYPE quack secret scoped to the fixed local endpoint supplies credentials.
+		const auto body = "SET schema = 'workspace';\n" + parser.GetString("sql");
+		const auto query = "SELECT * FROM quack_query('quack:127.0.0.1:9494', " +
+		                   KeywordHelper::WriteQuoted(body, '\'') + ")";
+		auto result = conn.Query(query);
+		if (result->HasError()) {
+			return CallToolResult::Error(result->GetError());
+		}
+		string rows = "[";
+		idx_t returned = 0;
+		bool capped = false;
+		while (auto chunk = result->Fetch()) {
+			for (idx_t row = 0; row < chunk->size(); row++) {
+				yyjson_mut_doc *doc = JSONUtils::CreateDocument();
+				auto object = JSONUtils::CreateObject(doc);
+				yyjson_mut_doc_set_root(doc, object);
+				for (idx_t column = 0; column < result->names.size(); column++) {
+					JSONUtils::AddObject(doc, object, result->names[column].c_str(),
+					                     JSONUtils::ValueToJSON(doc, chunk->GetValue(column, row)));
+				}
+				auto encoded = JSONUtils::Serialize(doc);
+				JSONUtils::FreeDocument(doc);
+				if (returned >= max_rows || rows.size() + encoded.size() + 256 > max_bytes) {
+					capped = true;
+					break;
+				}
+				if (returned++) { rows += ","; }
+				rows += encoded;
+			}
+			if (capped) { break; }
+		}
+		return CallToolResult::Success(Value("{\"rows\":" + rows + "],\"rows_returned\":" +
+		                                    std::to_string(returned) + ",\"capped\":" +
+		                                    (capped ? "true" : "false") + "}"));
+	} catch (const std::exception &e) {
+		return CallToolResult::Error(e.what());
+	}
+}
+
 // Delegate to shared implementation in ResultFormatter
 static string EscapeJsonString(const string &input) {
 	return ResultFormatter::EscapeJsonString(input);

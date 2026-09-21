@@ -1,0 +1,59 @@
+# description: modern discovery, legacy negotiation and truthful execution timeout
+# group: [duckdb_mcp]
+
+require duckdb_mcp
+
+# JSON operators are supplied by the separately built json extension.
+statement ok
+LOAD json;
+
+statement ok
+SELECT mcp_server_start('memory', '{"builtin_tools":false,"enable_quack_query_tool":true}');
+
+query T
+SELECT mcp_server_send_request('{"jsonrpc":"2.0","id":1,"method":"server/discover"}')::JSON->'result'->>'resultType';
+----
+complete
+
+query T
+SELECT mcp_server_send_request('{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}')::JSON->'result'->>'protocolVersion';
+----
+2025-11-25
+
+query T
+SELECT mcp_server_send_request('{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}')::JSON->'result'->>'protocolVersion';
+----
+2025-06-18
+
+query T
+SELECT mcp_server_send_request('{"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocolVersion":"1900-01-01"}}')::JSON->'result'->>'protocolVersion';
+----
+2025-11-25
+
+query T
+SELECT mcp_server_send_request('{"jsonrpc":"2.0","id":5,"method":"tools/list"}')::JSON->'result'->'tools'->0->>'name';
+----
+quack_query
+
+query T
+SELECT value FROM mcp_server_config() WHERE key='sql_execution_timeout';
+----
+none
+
+query I
+SELECT count(*) FROM mcp_server_config() WHERE key='request_timeout_seconds';
+----
+0
+
+query T
+SELECT mcp_server_send_request('{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"quack_query","arguments":{"sql":""}}}')::JSON->'result'->>'isError';
+----
+true
+
+statement ok
+SELECT mcp_server_stop();
+
+query I
+SELECT (mcp_server_start('memory', '{"request_timeout_seconds":30}')).success;
+----
+false

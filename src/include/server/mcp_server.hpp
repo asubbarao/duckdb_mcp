@@ -40,6 +40,9 @@ struct MCPServerConfig {
 	bool enable_list_tables_tool = true;   // List tables and views
 	bool enable_database_info_tool = true; // Database overview info
 	bool enable_execute_tool = false;      // Execute DDL/DML (disabled by default for safety)
+	bool enable_quack_query_tool = false; // Fixed local Quack endpoint, complete SQL bodies
+	bool enable_hostfs_tools = false; // Complete scalar surface of pinned HostFS 0.0.3
+	uint32_t quack_result_max_rows = 10000;
 
 	// Execute tool granular control
 	bool execute_allow_ddl = true; // Allow CREATE, DROP, ALTER, etc.
@@ -60,8 +63,10 @@ struct MCPServerConfig {
 	vector<string> allowed_queries;        // SQL query allowlist (empty = all allowed)
 	vector<string> denied_queries;         // SQL query denylist
 	string default_result_format = "json"; // Default format for query results ("json", "jsonl", "csv", "markdown")
-	uint32_t max_connections = 10;         // Maximum concurrent connections
-	uint32_t request_timeout_seconds = 30; // Request timeout
+	uint32_t max_connections = 8;
+	uint32_t http_io_timeout_seconds = 30; // Socket I/O only; SQL has no execution deadline
+	uint32_t max_request_bytes = 1048576;
+	uint32_t max_response_bytes = 8388608;
 	uint32_t max_requests = 0;             // Maximum requests before shutdown (0 = unlimited)
 	bool background = false;               // Run server in background thread (for testing)
 	bool require_auth = false;             // Authentication required
@@ -304,6 +309,7 @@ public:
 	// failures are reported through `out_failures` and this returns false. A
 	// registration failure is never swallowed into a successful start.
 	bool StartServer(const MCPServerConfig &config, vector<RegistrationFailure> *out_failures = nullptr);
+	void WaitForServer();
 	void StopServer();
 	bool IsServerRunning() const;
 
@@ -345,7 +351,7 @@ public:
 	bool HasServerConfig() const;
 
 private:
-	unique_ptr<MCPServer> server;
+	shared_ptr<MCPServer> server;
 	mutable mutex manager_mutex;
 
 	// Pending registrations (applied when server starts)
