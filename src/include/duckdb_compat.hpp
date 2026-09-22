@@ -50,6 +50,17 @@
 // Included (not probed-on) so that TUs naming ListVector/StructVector at
 // namespace scope keep compiling; the absence of these headers is not used to
 // infer anything about any API.
+// v1.5 reaches both ColumnDataCollection and Collection() through
+// materialized_query_result.hpp. v2.0 removed that header outright and
+// query_result.hpp carries the collection instead. Included (not probed-on) only
+// so the v1.5 branch of CompatResultCollection below has a type to name; the
+// absence of this header is NOT used to infer anything about any API.
+#if __has_include("duckdb/main/materialized_query_result.hpp")
+#define DUCKDB_HAS_MATERIALIZED_QUERY_RESULT 1
+#include "duckdb/main/materialized_query_result.hpp"
+#endif
+#include "duckdb/common/types/column/column_data_collection.hpp"
+
 #if __has_include("duckdb/common/vector/list_vector.hpp")
 #include "duckdb/common/vector/list_vector.hpp"
 #endif
@@ -375,6 +386,48 @@ inline const vector<LogicalType> &CompatResultTypesImpl(const RESULT &result, st
 template <class RESULT>
 inline const vector<LogicalType> &CompatResultTypes(const RESULT &result) {
 	return CompatResultTypesImpl(result, CompatHasResultGetTypes<RESULT>());
+}
+
+// --- QueryResult collection ---------------------------------------------------
+// v1.5: Collection() lives on MaterializedQueryResult, so a QueryResult & has to
+//       be downcast through Cast<MaterializedQueryResult>() to reach it.
+// v2.0: MaterializedQueryResult is GONE -- the header, src/main/
+//       materialized_query_result.cpp and physical_materialized_collector are
+//       all removed and the class is declared nowhere in the tree. Collection()
+//       moved up onto QueryResult itself, where it blocks until the result is
+//       materialized. So the capability did not disappear with the class; it
+//       changed which type owns it.
+//
+// Collection() does not exist on v1.5's QueryResult, so this is a positive v2.0
+// probe on the member that actually moved.
+//
+// The v1.5 branch is ALSO inside #ifdef DUCKDB_HAS_MATERIALIZED_QUERY_RESULT,
+// and tag dispatch cannot substitute for that guard. Tag dispatch defers member
+// lookup in an uninstantiated template; it does NOT defer lookup of a
+// non-dependent TYPE name. `MaterializedQueryResult` is such a name, so on v2.0
+// that overload is a hard error at definition time whether or not it is ever
+// selected -- the same class of trap as the SetChildCardinality note above, one
+// level up from members to types.
+template <class T, class = void>
+struct CompatHasResultCollection : std::false_type {};
+template <class T>
+struct CompatHasResultCollection<T, decltype(void(std::declval<T &>().Collection()))> : std::true_type {};
+
+template <class RESULT>
+inline ColumnDataCollection &CompatResultCollectionImpl(RESULT &result, std::true_type) {
+	return result.Collection();
+}
+#ifdef DUCKDB_HAS_MATERIALIZED_QUERY_RESULT
+template <class RESULT>
+inline ColumnDataCollection &CompatResultCollectionImpl(RESULT &result, std::false_type) {
+	return result.template Cast<MaterializedQueryResult>().Collection();
+}
+#endif
+//! The ColumnDataCollection behind a materialized query result. Blocks until the
+//! result is materialized on v2.0; on v1.5 the result already is.
+template <class RESULT>
+inline ColumnDataCollection &CompatResultCollection(RESULT &result) {
+	return CompatResultCollectionImpl(result, CompatHasResultCollection<RESULT>());
 }
 
 // --- STRUCT field names -------------------------------------------------------
