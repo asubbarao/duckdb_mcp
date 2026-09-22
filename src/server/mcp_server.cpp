@@ -362,6 +362,10 @@ HTTPServerConfig MCPServer::MakeHTTPConfig() const {
 	http_config.cors_origins = config.cors_origins;
 	http_config.enable_health_endpoint = config.enable_health_endpoint;
 	http_config.auth_health_endpoint = config.auth_health_endpoint;
+	http_config.max_connections = config.max_connections;
+	http_config.http_io_timeout_seconds = config.http_io_timeout_seconds;
+	http_config.max_request_bytes = config.max_request_bytes;
+	http_config.max_response_bytes = config.max_response_bytes;
 
 	if (config.transport == "https") {
 		http_config.use_ssl = true;
@@ -377,6 +381,9 @@ HTTPServerTransport::RequestHandler MCPServer::MakeHTTPHandler() {
 		try {
 			MCPMessage request = MCPMessage::FromJSON(request_json);
 			MCPMessage response = ProcessRequest(request);
+			if (request.IsNotification()) {
+				return "";
+			}
 			return response.ToJSON();
 		} catch (const std::exception &e) {
 			MCP_LOG_ERROR("HTTP", "Failed to process request: %s", e.what());
@@ -485,7 +492,20 @@ MCPMessage MCPServer::HandleRequest(const MCPMessage &request) {
 		}
 
 		// Route request based on method
-		if (request.method == MCPMethods::INITIALIZE) {
+		if (request.method == "server/discover") {
+			Value info = Value::STRUCT({{"name", Value("DuckDB MCP Server")}, {"version", Value(DUCKDB_MCP_VERSION)}});
+			Value capabilities = Value::STRUCT({{"tools", Value::STRUCT({{"listChanged", Value(false)}})},
+			                                   {"resources", Value::STRUCT({{"subscribe", Value(false)}})},
+			                                   {"prompts", Value::STRUCT({{"listChanged", Value(false)}})}});
+			return MCPMessage::CreateResponse(
+			    Value::STRUCT({{"resultType", Value("complete")},
+			                   {"supportedVersions", Value::LIST(LogicalType::VARCHAR, {Value("2026-07-28")})},
+			                   {"capabilities", capabilities},
+			                   {"_meta", Value::STRUCT({{"io.modelcontextprotocol/serverInfo", info}})}}),
+			    request.id);
+		} else if (request.method == MCPMethods::PING) {
+			return MCPMessage::CreateResponse(Value::STRUCT({}), request.id);
+		} else if (request.method == MCPMethods::INITIALIZE) {
 			return HandleInitialize(request);
 		} else if (request.method == MCPMethods::RESOURCES_LIST) {
 			return HandleResourcesList(request);
@@ -750,9 +770,7 @@ MCPMessage MCPServer::HandleToolsCall(const MCPMessage &request) {
 	}
 
 	auto call_result = handler->Execute(arguments);
-	if (!call_result.success) {
-		return CreateErrorResponse(request.id, MCPErrorCodes::INVALID_TOOL_INPUT, call_result.error_message);
-	}
+	// Tool execution errors are CallToolResult errors, not malformed JSON-RPC requests.
 
 	// Build content list with proper struct type
 	child_list_t<LogicalType> content_struct_members;
@@ -760,9 +778,11 @@ MCPMessage MCPServer::HandleToolsCall(const MCPMessage &request) {
 	content_struct_members.push_back({"text", LogicalType::VARCHAR});
 	LogicalType content_struct_type = LogicalType::STRUCT(content_struct_members);
 
-	Value content_item = Value::STRUCT({{"type", Value("text")}, {"text", call_result.result}});
+	Value content_item = Value::STRUCT({{"type", Value("text")},
+	                                  {"text", call_result.success ? call_result.result : Value(call_result.error_message)}});
 
-	Value result = Value::STRUCT({{"content", Value::LIST(content_struct_type, {content_item})}});
+	Value result = Value::STRUCT({{"content", Value::LIST(content_struct_type, {content_item})},
+	                              {"isError", Value(!call_result.success)}});
 
 	return MCPMessage::CreateResponse(result, request.id);
 }

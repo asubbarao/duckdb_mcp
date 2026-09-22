@@ -22,7 +22,10 @@ struct HTTPServerConfig {
 	string cors_origins;                // CORS: empty=disabled (default), "*"=wildcard, or comma-separated origins
 	bool enable_health_endpoint = true; // Enable /health endpoint
 	bool auth_health_endpoint = false;  // Require auth for /health endpoint
-	int request_timeout_ms = 30000;
+	size_t max_connections = 8;
+	size_t max_request_bytes = 1048576;
+	size_t max_response_bytes = 8388608;
+	int http_io_timeout_seconds = 30; // Socket I/O only; does not cancel SQL execution.
 
 	// HTTPS/SSL configuration
 	bool use_ssl = false;

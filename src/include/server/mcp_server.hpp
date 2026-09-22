@@ -60,8 +60,10 @@ struct MCPServerConfig {
 	vector<string> allowed_queries;        // SQL query allowlist (empty = all allowed)
 	vector<string> denied_queries;         // SQL query denylist
 	string default_result_format = "json"; // Default format for query results ("json", "jsonl", "csv", "markdown")
-	uint32_t max_connections = 10;         // Maximum concurrent connections
-	uint32_t request_timeout_seconds = 30; // Request timeout
+	uint32_t max_connections = 8;
+	uint32_t http_io_timeout_seconds = 30; // Socket I/O only; SQL has no execution deadline
+	uint32_t max_request_bytes = 1048576;
+	uint32_t max_response_bytes = 8388608;
 	uint32_t max_requests = 0;             // Maximum requests before shutdown (0 = unlimited)
 	bool background = false;               // Run server in background thread (for testing)
 	bool require_auth = false;             // Authentication required

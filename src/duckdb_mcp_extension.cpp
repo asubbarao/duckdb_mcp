@@ -558,6 +558,21 @@ static Value MCPServerStartCore(ClientContext &context, const string &transport,
 			if (root && yyjson_is_obj(root)) {
 				// Parse max_requests
 				server_config.max_requests = static_cast<uint32_t>(JSONUtils::GetInt(root, "max_requests", 0));
+				if (yyjson_obj_get(root, "request_timeout_seconds")) {
+					throw InvalidInputException(
+					    "request_timeout_seconds was never enforced; use http_io_timeout_seconds for socket I/O only");
+				}
+				auto bounded_uint = [root](const char *key, uint32_t fallback, uint32_t maximum) {
+					auto value = JSONUtils::GetInt(root, key, fallback);
+					if (value < 1 || value > maximum) {
+						throw InvalidInputException("Invalid bound for %s", key);
+					}
+					return static_cast<uint32_t>(value);
+				};
+				server_config.max_connections = bounded_uint("max_connections", 8, 128);
+				server_config.http_io_timeout_seconds = bounded_uint("http_io_timeout_seconds", 30, 3600);
+				server_config.max_request_bytes = bounded_uint("max_request_bytes", 1048576, 67108864);
+				server_config.max_response_bytes = bounded_uint("max_response_bytes", 8388608, 67108864);
 
 				// Blanket built-in tool switch (issue #75). This is an alias over the
 				// individual enable_*_tool flags below, for the common "publish a
