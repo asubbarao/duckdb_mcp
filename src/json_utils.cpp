@@ -137,6 +137,18 @@ yyjson_mut_val *JSONUtils::ValueToJSON(yyjson_mut_doc *doc, const Value &value) 
 	if (value.IsNull()) {
 		return yyjson_mut_null(doc);
 	}
+	if (value.type().IsNumeric()) {
+		// Keep every DuckDB numeric type numeric in JSON, including DECIMAL and
+		// HUGEINT, which do not have a dedicated yyjson numeric constructor.
+		// JSON has no representation for non-finite numbers, so match the
+		// formatter contract and emit them as null.
+		string numeric = value.ToString();
+		if (numeric == "nan" || numeric == "-nan" || numeric == "inf" || numeric == "-inf" ||
+		    numeric == "NaN" || numeric == "Infinity" || numeric == "-Infinity") {
+			return yyjson_mut_null(doc);
+		}
+		return yyjson_mut_rawncpy(doc, numeric.c_str(), numeric.size());
+	}
 
 	switch (value.type().id()) {
 	case LogicalTypeId::BOOLEAN:

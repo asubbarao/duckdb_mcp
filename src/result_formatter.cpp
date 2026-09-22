@@ -1,5 +1,6 @@
 #include "result_formatter.hpp"
 #include "duckdb_compat.hpp"
+#include "json_utils.hpp"
 
 namespace duckdb {
 
@@ -92,71 +93,52 @@ string ResultFormatter::Format(QueryResult &result, const string &format) {
 	return "";
 }
 
-// Type-aware JSON value serialization: numbers and booleans are unquoted
-static void AppendJsonValue(string &out, const Value &value, const LogicalType &type) {
-	if (value.IsNull()) {
-		out += "null";
-		return;
+static yyjson_mut_val *CreateJsonRow(yyjson_mut_doc *doc, QueryResult &result, DataChunk &chunk, idx_t row) {
+	auto *json_row = JSONUtils::CreateObject(doc);
+	for (idx_t col = 0; col < chunk.ColumnCount(); col++) {
+		const string column_name = CompatNameStr(CompatResultNames(result)[col]);
+		auto *json_value = JSONUtils::ValueToJSON(doc, chunk.GetValue(col, row));
+		JSONUtils::AddObject(doc, json_row, column_name.c_str(), json_value);
 	}
-	if (type.IsNumeric()) {
-		string s = value.ToString();
-		// JSON does not support NaN/Infinity — substitute null
-		if (s == "nan" || s == "-nan" || s == "inf" || s == "-inf" || s == "NaN" || s == "Infinity" ||
-		    s == "-Infinity") {
-			out += "null";
-		} else {
-			out += s;
-		}
-		return;
-	}
-	if (type.id() == LogicalTypeId::BOOLEAN) {
-		out += value.GetValue<bool>() ? "true" : "false";
-		return;
-	}
-	out += "\"" + ResultFormatter::EscapeJsonString(value.ToString()) + "\"";
+	return json_row;
 }
 
 string ResultFormatter::FormatAsJSON(QueryResult &result) {
-	string json = "[";
-	bool first_row = true;
-
-	while (auto chunk = result.Fetch()) {
-		for (idx_t i = 0; i < chunk->size(); i++) {
-			if (!first_row) {
-				json += ",";
+	auto *doc = JSONUtils::CreateDocument();
+	try {
+		auto *json_array = JSONUtils::CreateArray(doc);
+		while (auto chunk = result.Fetch()) {
+			for (idx_t row = 0; row < chunk->size(); row++) {
+				JSONUtils::ArrayAdd(doc, json_array, CreateJsonRow(doc, result, *chunk, row));
 			}
-			first_row = false;
-
-			json += "{";
-			for (idx_t col = 0; col < chunk->ColumnCount(); col++) {
-				if (col > 0)
-					json += ",";
-				json += "\"" + EscapeJsonString(CompatNameStr(CompatResultNames(result)[col])) + "\":";
-				AppendJsonValue(json, chunk->GetValue(col, i), CompatResultTypes(result)[col]);
-			}
-			json += "}";
 		}
+		yyjson_mut_doc_set_root(doc, json_array);
+		string json = JSONUtils::Serialize(doc);
+		JSONUtils::FreeDocument(doc);
+		return json;
+	} catch (...) {
+		JSONUtils::FreeDocument(doc);
+		throw;
 	}
-	json += "]";
-	return json;
 }
 
 string ResultFormatter::FormatAsJSONL(QueryResult &result) {
 	string jsonl;
-
-	while (auto chunk = result.Fetch()) {
-		for (idx_t i = 0; i < chunk->size(); i++) {
-			jsonl += "{";
-			for (idx_t col = 0; col < chunk->ColumnCount(); col++) {
-				if (col > 0)
-					jsonl += ",";
-				jsonl += "\"" + EscapeJsonString(CompatNameStr(CompatResultNames(result)[col])) + "\":";
-				AppendJsonValue(jsonl, chunk->GetValue(col, i), CompatResultTypes(result)[col]);
+	auto *doc = JSONUtils::CreateDocument();
+	try {
+		while (auto chunk = result.Fetch()) {
+			for (idx_t row = 0; row < chunk->size(); row++) {
+				yyjson_mut_doc_set_root(doc, CreateJsonRow(doc, result, *chunk, row));
+				jsonl += JSONUtils::Serialize(doc);
+				jsonl += "\n";
 			}
-			jsonl += "}\n";
 		}
+		JSONUtils::FreeDocument(doc);
+		return jsonl;
+	} catch (...) {
+		JSONUtils::FreeDocument(doc);
+		throw;
 	}
-	return jsonl;
 }
 
 string ResultFormatter::QuoteCSVField(const string &field) {

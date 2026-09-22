@@ -139,7 +139,7 @@ SELECT mcp_publish_table('table_name', 'uri', 'format');
 |-----------|------|-------------|
 | `table_name` | VARCHAR | Name of the table to publish |
 | `uri` | VARCHAR | Resource URI (default: `data://tables/<table_name>`) |
-| `format` | VARCHAR | Output format: `json`, `csv`, `markdown` |
+| `format` | VARCHAR | Output format: `json`, `jsonl`, `csv`, `markdown`, or `text` |
 
 **Example:**
 
@@ -181,7 +181,7 @@ SELECT mcp_publish_query('sql', 'uri', 'format', refresh_interval);
 |-----------|------|-------------|
 | `sql` | VARCHAR | SQL query to execute |
 | `uri` | VARCHAR | Resource URI |
-| `format` | VARCHAR | Output format: `json`, `csv`, `markdown` |
+| `format` | VARCHAR | Output format: `json`, `jsonl`, `csv`, `markdown`, or `text` |
 | `refresh_interval` | INTEGER | Refresh interval in seconds (minimum 60) |
 
 **Example:**
@@ -280,7 +280,7 @@ SELECT mcp_publish_tool('name', 'description', 'sql_template', 'properties', 're
 | `sql_template` | VARCHAR | SQL with `$param` placeholders |
 | `properties` | VARCHAR | JSON Schema for parameters |
 | `required` | VARCHAR | JSON array of required parameter names |
-| `format` | VARCHAR | Output format: `json`, `csv`, `markdown` (default: `json`) |
+| `format` | VARCHAR | Output format: `json`, `jsonl`, `csv`, `markdown`, or `text` (default: `json`) |
 
 !!! warning "All parameters are VARCHAR"
     Pass JSON as **string literals**, not `json_object(...)` or `JSON` type expressions. Using `json_object()` produces a `JSON` type which won't match the function signature.
@@ -367,7 +367,7 @@ SELECT mcp_publish_execution_tool('name', 'description', 'sql_template', 'proper
 | `properties` | VARCHAR | JSON Schema for parameters |
 | `required` | VARCHAR | JSON array of required parameter names |
 | `bindings` | VARCHAR | Binding spec: JSON object (global) or array (per-statement) |
-| `format` | VARCHAR | Output format (default: `json`) |
+| `format` | VARCHAR | Output format: `json`, `jsonl`, `csv`, `markdown`, or `text` (default: `json`) |
 
 **Binding Specs:**
 

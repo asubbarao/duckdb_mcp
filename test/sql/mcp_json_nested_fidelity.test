@@ -1,0 +1,51 @@
+# name: test/sql/mcp_json_nested_fidelity.test
+# description: JSON and JSONL preserve nested JSON aliases, structs, lists, and maps
+# group: [sql]
+
+require duckdb_mcp
+
+require json
+
+statement ok
+LOAD duckdb_mcp;
+
+statement ok
+SELECT mcp_server_stop(true);
+
+statement ok
+SELECT mcp_server_start('memory');
+
+# Compare the complete JSON-RPC response so the assertion is against the exact
+# formatter output, not an escaped substring of the envelope. The query
+# deliberately exercises all nested value families in one row.
+
+query I
+SELECT contains(
+    mcp_server_send_request(
+        '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query","arguments":{"sql":"SELECT ''{\"name\":\"Ada\",\"active\":true}''::JSON AS json_alias, struct_pack(profile := struct_pack(score := 7, tags := [''a'', ''b''])) AS struct_value, [[1, 2], [3, NULL]] AS list_value, map([''key''], [struct_pack(nested := ''value'')]) AS map_value","format":"json"}}}'
+    ),
+    replace(
+        '[{"json_alias":{"name":"Ada","active":true},"struct_value":{"profile":{"score":7,"tags":["a","b"]}},"list_value":[[1,2],[3,null]],"map_value":{"key":{"nested":"value"}}}]',
+        '"',
+        chr(92) || '"'
+    )
+);
+----
+true
+
+query I
+SELECT contains(
+    mcp_server_send_request(
+        '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"sql":"SELECT ''{\"name\":\"Ada\",\"active\":true}''::JSON AS json_alias, struct_pack(profile := struct_pack(score := 7, tags := [''a'', ''b''])) AS struct_value, [[1, 2], [3, NULL]] AS list_value, map([''key''], [struct_pack(nested := ''value'')]) AS map_value","format":"jsonl"}}}'
+    ),
+    replace(
+        '{"json_alias":{"name":"Ada","active":true},"struct_value":{"profile":{"score":7,"tags":["a","b"]}},"list_value":[[1,2],[3,null]],"map_value":{"key":{"nested":"value"}}}',
+        '"',
+        chr(92) || '"'
+    )
+);
+----
+true
+
+statement ok
+SELECT mcp_server_stop(true);

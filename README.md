@@ -91,7 +91,7 @@ SELECT mcp_call_tool('server', 'analyze', '{"dataset": "sales"}');
 
 | Tool | Description |
 |------|-------------|
-| `query` | Execute SQL SELECT queries (supports json/markdown/csv format) |
+| `query` | Execute SQL SELECT queries (supports json, jsonl, csv, markdown, and text formats) |
 | `describe` | Get table or query schema information |
 | `list_tables` | List all tables and views |
 | `database_info` | Get database overview |
@@ -122,7 +122,7 @@ switches on `execute`. See
 -- 5-arg form (JSON output, the default)
 PRAGMA mcp_publish_tool(name, description, sql_template, properties_json, required_json);
 
--- 6-arg form (explicit output format: 'json', 'markdown', or 'csv')
+-- 6-arg form (explicit output format: 'json', 'jsonl', 'csv', 'markdown', or 'text')
 PRAGMA mcp_publish_tool(name, description, sql_template, properties_json, required_json, format);
 ```
 

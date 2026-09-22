@@ -191,6 +191,22 @@ The `query` tool supports multiple output formats:
 
     Returns comma-separated values - best for data export.
 
+=== "JSONL"
+
+    ```json
+    {"name": "query", "arguments": {"sql": "SELECT * FROM products", "format": "jsonl"}}
+    ```
+
+    Returns one JSON object per line - useful for streaming results.
+
+=== "Text"
+
+    ```json
+    {"name": "query", "arguments": {"sql": "SELECT * FROM products", "format": "text"}}
+    ```
+
+    Returns tab-separated values without headers.
+
 ## Next Steps
 
 - **[Server Functions Reference](reference/server.md)** - Complete API for running as a server

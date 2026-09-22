@@ -197,8 +197,10 @@ PRAGMA mcp_publish_tool(
 | Format | Best For |
 |--------|----------|
 | `json` | Programmatic processing (default) |
+| `jsonl` | Streaming one JSON object per line |
 | `markdown` | AI assistants (token-efficient) |
 | `csv` | Data export |
+| `text` | Plain text, tab-separated values |
 
 ## Advanced Patterns
 
