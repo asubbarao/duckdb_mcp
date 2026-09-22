@@ -626,9 +626,9 @@ string ExportToolHandler::ExportToFile(QueryResult &result, const string &format
 			return "Export error: " + create_result->GetError();
 		}
 
-		// Insert data from the already-materialized result
-		auto &materialized = result.Cast<MaterializedQueryResult>();
-		auto &collection = materialized.Collection();
+		// Insert data from the already-materialized result. v2.0 removed
+		// MaterializedQueryResult and moved Collection() onto QueryResult.
+		auto &collection = CompatResultCollection(result);
 
 		if (collection.Count() > 0) {
 			// Appender takes an Identifier on v2.0 and a string on v1.5; temp_table is a
