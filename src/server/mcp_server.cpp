@@ -376,6 +376,10 @@ HTTPServerTransport::RequestHandler MCPServer::MakeHTTPHandler() {
 	return [this](const string &request_json) -> string {
 		try {
 			MCPMessage request = MCPMessage::FromJSON(request_json);
+			if (request.IsNotification()) {
+				HandleNotification(request);
+				return "";
+			}
 			MCPMessage response = ProcessRequest(request);
 			return response.ToJSON();
 		} catch (const std::exception &e) {

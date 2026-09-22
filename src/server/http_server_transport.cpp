@@ -139,7 +139,11 @@ void SetupRoutes(ServerType &server, const HTTPServerConfig &config,
 		// Process the MCP request
 		try {
 			string response = request_handler(req.body);
-			res.set_content(response, "application/json");
+			if (response.empty()) {
+				res.status = 202;
+			} else {
+				res.set_content(response, "application/json");
+			}
 		} catch (const std::exception &e) {
 			// Log full error internally but return a generic message to the client
 			// to avoid leaking internal details (stack traces, file paths, etc.)

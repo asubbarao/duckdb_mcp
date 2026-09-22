@@ -134,10 +134,33 @@ echo -e "${YELLOW}Test 3: Tools list${NC}"
 PORT=18082
 start_server $PORT
 
-RESPONSE=$(curl -s -X POST http://localhost:$PORT/mcp \
+NOTIFICATION_BODY=$(mktemp)
+NOTIFICATION_STATUS=$(curl -s -X POST http://localhost:$PORT/mcp \
+    -o "$NOTIFICATION_BODY" -w "%{http_code}" \
+    -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+    2>/dev/null || echo "000")
+
+if [ "$NOTIFICATION_STATUS" = "202" ] && [ ! -s "$NOTIFICATION_BODY" ]; then
+    pass "Notification returns 202 with an empty body"
+else
+    fail "Notification response" "202 with an empty body" "$NOTIFICATION_STATUS $(cat "$NOTIFICATION_BODY")"
+fi
+rm -f "$NOTIFICATION_BODY"
+
+TOOLS_BODY=$(mktemp)
+TOOLS_STATUS=$(curl -s -X POST http://localhost:$PORT/mcp \
+    -o "$TOOLS_BODY" -w "%{http_code}" \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
     2>/dev/null || echo "CURL_ERROR")
+RESPONSE=$(cat "$TOOLS_BODY")
+
+if [ "$TOOLS_STATUS" = "200" ]; then
+    pass "Normal request returns 200 OK"
+else
+    fail "Normal request status" "200" "$TOOLS_STATUS"
+fi
 
 if echo "$RESPONSE" | grep -q '"name":"query"'; then
     pass "Tools list includes query tool"
@@ -151,6 +174,7 @@ else
     fail "Tools list" "describe tool in response" "$RESPONSE"
 fi
 
+rm -f "$TOOLS_BODY"
 stop_server
 
 # ==========================================
