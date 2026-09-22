@@ -11,6 +11,7 @@
 #endif
 #include <unordered_map>
 #include <ctime>
+#include <chrono>
 
 namespace duckdb {
 
@@ -131,6 +132,16 @@ public:
 	}
 	uint64_t GetErrorsReturned() const {
 		return errors_returned.load();
+	}
+	string GetTransport() const {
+		return config.transport;
+	}
+	string GetBindAddress() const {
+		return config.bind_address;
+	}
+	int GetPort() const;
+	bool IsBackground() const {
+		return config.background;
 	}
 
 	// Resource management
@@ -296,6 +307,20 @@ public:
 	MCPServerManager() = default;
 	~MCPServerManager();
 
+	// Thread-safe status snapshot. Terminal snapshots retain the final counters
+	// after a foreground listener exits, so its completion is observable.
+	struct ServerStats {
+		bool running = false;
+		string status;
+		string transport;
+		string listen;
+		int port = 0;
+		bool background = false;
+		uint64_t requests_received = 0;
+		uint64_t responses_sent = 0;
+		uint64_t errors_returned = 0;
+	};
+
 	// Starts the server and applies every queued tool/resource registration.
 	//
 	// Registrations are validated before any of them is applied, so the outcome
@@ -304,7 +329,8 @@ public:
 	// failures are reported through `out_failures` and this returns false. A
 	// registration failure is never swallowed into a successful start.
 	bool StartServer(const MCPServerConfig &config, vector<RegistrationFailure> *out_failures = nullptr);
-	void StopServer();
+	ServerStats StopServer();
+	ServerStats WaitForServer();
 	bool IsServerRunning() const;
 
 	// Send request to running server (for testing with memory transport)
@@ -315,14 +341,7 @@ public:
 	bool RegisterTool(const string &name, shared_ptr<ToolHandler> handler);
 	bool AllowsDirectRequests() const;
 
-	// Thread-safe status query (returns empty struct values when server not running)
-	struct ServerStats {
-		bool running = false;
-		string status;
-		uint64_t requests_received = 0;
-		uint64_t responses_sent = 0;
-		uint64_t errors_returned = 0;
-	};
+	// Thread-safe status query (returns the latest terminal snapshot when stopped)
 	ServerStats GetServerStats() const;
 
 	// Queue registrations for when server starts
@@ -343,10 +362,13 @@ public:
 	vector<ResourceMetadataEntry> GetResourceSnapshot() const;
 	MCPServerConfig GetServerConfigSnapshot() const;
 	bool HasServerConfig() const;
+	void ClearTerminalStats();
 
 private:
-	unique_ptr<MCPServer> server;
+	shared_ptr<MCPServer> server;
 	mutable mutex manager_mutex;
+	ServerStats terminal_stats;
+	bool has_terminal_stats = false;
 
 	// Pending registrations (applied when server starts)
 	vector<PendingToolRegistration> pending_tools;
@@ -358,6 +380,7 @@ private:
 	// clear them only if all of them can be built. Returns false (leaving the
 	// queue untouched) as soon as any of them cannot.
 	bool ApplyRegistrationsTo(MCPServer *target, vector<RegistrationFailure> *out_failures);
+	static ServerStats SnapshotServer(const MCPServer &target);
 };
 
 } // namespace duckdb

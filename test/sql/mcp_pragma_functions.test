@@ -38,6 +38,12 @@ SELECT (mcp_server_status()).running;
 ----
 false
 
+# PRAGMA must not discard a failed startup status.
+statement error
+PRAGMA mcp_server_start('not-a-transport');
+----
+Failed to start MCP server
+
 # =============================================================================
 # SECTION 2: PRAGMA mcp_server_start with config JSON
 # =============================================================================

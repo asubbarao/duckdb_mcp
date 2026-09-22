@@ -226,10 +226,10 @@ bool HTTPServerTransport::Run(RequestHandler handler) {
 	// Run server in calling thread (blocks until Stop() is called)
 	ServerLoop();
 
-	return true;
+	return actual_port.load() > 0;
 }
 
-void HTTPServerTransport::Stop() {
+void HTTPServerTransport::RequestStop() {
 	stop_requested = true;
 	running = false;
 
@@ -241,7 +241,10 @@ void HTTPServerTransport::Stop() {
 			static_cast<CPPHTTPLIB_NAMESPACE::Server *>(server_ptr)->stop();
 		}
 	}
+}
 
+void HTTPServerTransport::Stop() {
+	RequestStop();
 	if (server_thread && server_thread->joinable()) {
 		server_thread->join();
 	}
@@ -289,7 +292,12 @@ void HTTPServerTransport::ServerLoop() {
 
 		// Bind and listen
 		int port = config.port;
-		if (!server.bind_to_port(config.host.c_str(), port)) {
+		if (port == 0) {
+			port = server.bind_to_any_port(config.host.c_str());
+		} else if (!server.bind_to_port(config.host.c_str(), port)) {
+			port = -1;
+		}
+		if (port <= 0) {
 			running = false;
 			signal_startup();
 			return;
@@ -333,7 +341,12 @@ void HTTPServerTransport::ServerLoop() {
 
 	// Bind and listen
 	int port = config.port;
-	if (!server.bind_to_port(config.host.c_str(), port)) {
+	if (port == 0) {
+		port = server.bind_to_any_port(config.host.c_str());
+	} else if (!server.bind_to_port(config.host.c_str(), port)) {
+		port = -1;
+	}
+	if (port <= 0) {
 		running = false;
 		signal_startup();
 		return;

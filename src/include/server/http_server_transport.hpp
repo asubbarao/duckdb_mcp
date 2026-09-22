@@ -47,6 +47,8 @@ public:
 
 	//! Stop the HTTP server
 	void Stop();
+	//! Request shutdown without joining the HTTP worker or listener threads.
+	void RequestStop();
 
 	//! Check if the server is running
 	bool IsRunning() const;

@@ -208,10 +208,6 @@ bool MCPServer::StartForeground() {
 }
 
 void MCPServer::Stop() {
-	if (!running.load()) {
-		return;
-	}
-
 	running = false;
 
 #ifdef __EMSCRIPTEN__
@@ -354,6 +350,15 @@ bool MCPServer::StartHTTPServer(bool blocking) {
 	return result;
 }
 
+int MCPServer::GetPort() const {
+#ifndef __EMSCRIPTEN__
+	if (http_server) {
+		return http_server->GetPort();
+	}
+#endif
+	return config.port;
+}
+
 HTTPServerConfig MCPServer::MakeHTTPConfig() const {
 	HTTPServerConfig http_config;
 	http_config.host = config.bind_address;
@@ -374,12 +379,34 @@ HTTPServerConfig MCPServer::MakeHTTPConfig() const {
 
 HTTPServerTransport::RequestHandler MCPServer::MakeHTTPHandler() {
 	return [this](const string &request_json) -> string {
+		active_connections.fetch_add(1);
+		struct RequestGuard {
+			atomic<uint32_t> &active_connections;
+			~RequestGuard() {
+				active_connections.fetch_sub(1);
+			}
+		} guard {active_connections};
+		requests_received.fetch_add(1);
 		try {
 			MCPMessage request = MCPMessage::FromJSON(request_json);
 			MCPMessage response = ProcessRequest(request);
-			return response.ToJSON();
+			if (request.IsNotification()) {
+				return "";
+			}
+			auto response_json = response.ToJSON();
+			responses_sent.fetch_add(1);
+			if (response.IsError()) {
+				errors_returned.fetch_add(1);
+			}
+			if (config.max_requests > 0 && requests_received.load() >= config.max_requests) {
+				running = false;
+				http_server->RequestStop();
+			}
+			return response_json;
 		} catch (const std::exception &e) {
 			MCP_LOG_ERROR("HTTP", "Failed to process request: %s", e.what());
+			errors_returned.fetch_add(1);
+			responses_sent.fetch_add(1);
 			return R"({"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"},"id":null})";
 		}
 	};
@@ -770,6 +797,11 @@ MCPMessage MCPServer::HandleToolsCall(const MCPMessage &request) {
 MCPMessage MCPServer::HandleShutdown(const MCPMessage &request) {
 	// Gracefully shut down the server
 	running = false;
+#ifndef __EMSCRIPTEN__
+	if (http_server) {
+		http_server->RequestStop();
+	}
+#endif
 
 	Value result = Value::STRUCT({{"status", Value("shutting down")}, {"message", Value("Server shutdown initiated")}});
 
@@ -851,7 +883,8 @@ bool MCPServerManager::StartServer(const MCPServerConfig &config, vector<Registr
 		return false; // Server already running
 	}
 
-	server = make_uniq<MCPServer>(config);
+	server = make_shared_ptr<MCPServer>(config);
+	has_terminal_stats = false;
 	bool started = server->Start();
 
 	if (started) {
@@ -868,13 +901,53 @@ bool MCPServerManager::StartServer(const MCPServerConfig &config, vector<Registr
 	return started;
 }
 
-void MCPServerManager::StopServer() {
-	lock_guard<mutex> lock(manager_mutex);
+MCPServerManager::ServerStats MCPServerManager::SnapshotServer(const MCPServer &target) {
+	ServerStats stats;
+	stats.running = target.IsRunning();
+	stats.status = target.GetStatus();
+	stats.transport = target.GetTransport();
+	stats.listen = target.GetBindAddress();
+	stats.port = target.GetPort();
+	stats.background = target.IsBackground();
+	stats.requests_received = target.GetRequestsReceived();
+	stats.responses_sent = target.GetResponsesSent();
+	stats.errors_returned = target.GetErrorsReturned();
+	return stats;
+}
 
-	if (server) {
-		server->Stop();
-		server.reset();
+MCPServerManager::ServerStats MCPServerManager::StopServer() {
+	shared_ptr<MCPServer> stopping;
+	{
+		lock_guard<mutex> lock(manager_mutex);
+		stopping = std::move(server);
 	}
+	if (!stopping) {
+		lock_guard<mutex> lock(manager_mutex);
+		return has_terminal_stats ? terminal_stats : ServerStats {};
+	}
+
+	auto stats = SnapshotServer(*stopping);
+	stopping->Stop();
+	stats.running = false;
+	stats.status = stopping->GetStatus();
+	stats.requests_received = stopping->GetRequestsReceived();
+	stats.responses_sent = stopping->GetResponsesSent();
+	stats.errors_returned = stopping->GetErrorsReturned();
+	{
+		lock_guard<mutex> lock(manager_mutex);
+		terminal_stats = stats;
+		has_terminal_stats = true;
+	}
+	return stats;
+}
+
+MCPServerManager::ServerStats MCPServerManager::WaitForServer() {
+#ifndef __EMSCRIPTEN__
+	while (IsServerRunning()) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	}
+#endif
+	return StopServer();
 }
 
 bool MCPServerManager::IsServerRunning() const {
@@ -883,13 +956,15 @@ bool MCPServerManager::IsServerRunning() const {
 }
 
 MCPMessage MCPServerManager::SendRequest(const MCPMessage &request) {
-	lock_guard<mutex> lock(manager_mutex);
-
-	if (!server) {
+	shared_ptr<MCPServer> target;
+	{
+		lock_guard<mutex> lock(manager_mutex);
+		target = server;
+	}
+	if (!target) {
 		return MCPMessage::CreateError(MCPErrorCodes::INTERNAL_ERROR, "No server running", request.id);
 	}
-
-	return server->ProcessRequest(request);
+	return target->ProcessRequest(request);
 }
 
 bool MCPServerManager::PublishResource(const string &uri, shared_ptr<ResourceProvider> provider) {
@@ -918,15 +993,16 @@ bool MCPServerManager::AllowsDirectRequests() const {
 
 MCPServerManager::ServerStats MCPServerManager::GetServerStats() const {
 	lock_guard<mutex> lock(manager_mutex);
-	ServerStats stats;
-	if (server && server->IsRunning()) {
-		stats.running = true;
-		stats.status = server->GetStatus();
-		stats.requests_received = server->GetRequestsReceived();
-		stats.responses_sent = server->GetResponsesSent();
-		stats.errors_returned = server->GetErrorsReturned();
+	if (server) {
+		return SnapshotServer(*server);
 	}
-	return stats;
+	return has_terminal_stats ? terminal_stats : ServerStats {};
+}
+
+void MCPServerManager::ClearTerminalStats() {
+	lock_guard<mutex> lock(manager_mutex);
+	terminal_stats = ServerStats {};
+	has_terminal_stats = false;
 }
 
 void MCPServerManager::QueueToolRegistration(PendingToolRegistration registration) {

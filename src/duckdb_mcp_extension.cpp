@@ -802,29 +802,16 @@ static Value MCPServerStartCore(ClientContext &context, const string &transport,
 					                       port, true);
 				}
 			} else {
-				// Foreground mode: handle HTTP in calling thread (blocking)
-				MCPServer server(server_config);
-				if (!server.StartForeground()) {
-					return CreateMCPStatus(false, false, "Failed to initialize MCP server", transport, bind_address,
-					                       port, false);
-				}
-				// Apply any pending tool/resource registrations from server_manager
+				// Keep the managed listener visible to status, registration and stop calls.
 				vector<RegistrationFailure> reg_failures;
-				if (!server_manager.ApplyPendingRegistrationsTo(&server, &reg_failures)) {
-					server.Stop();
+				if (!server_manager.StartServer(server_config, &reg_failures)) {
 					return CreateMCPStatus(false, false, StartFailureMessage(reg_failures), transport, bind_address,
 					                       port, false);
 				}
-				try {
-					server.RunHTTPLoop(); // Blocks until Stop() is called or server shuts down
-					return CreateMCPStatus(true, false, "MCP server completed", transport, bind_address, port, false,
-					                       server.GetRequestsReceived(), server.GetResponsesSent(),
-					                       server.GetErrorsReturned());
-				} catch (const std::exception &e) {
-					return CreateMCPStatus(false, false, string(e.what()), transport, bind_address, port, false,
-					                       server.GetRequestsReceived(), server.GetResponsesSent(),
-					                       server.GetErrorsReturned());
-				}
+				auto terminal = server_manager.WaitForServer();
+				return CreateMCPStatus(true, false, "MCP server completed", terminal.transport, terminal.listen,
+				                       terminal.port, terminal.background, terminal.requests_received,
+				                       terminal.responses_sent, terminal.errors_returned);
 			}
 		}
 #endif // !__EMSCRIPTEN__
@@ -910,15 +897,15 @@ static Value MCPServerStopCore(DatabaseInstance &db, bool force) {
 		auto &server_manager = MCPInstanceState::Get(db).server_manager;
 
 		bool was_running = server_manager.IsServerRunning();
-		if (was_running) {
-			server_manager.StopServer();
-		}
+		auto terminal = was_running ? server_manager.StopServer() : MCPServerManager::ServerStats {};
 
 		if (force) {
+			server_manager.ClearTerminalStats();
 			return CreateMCPStatus(true, false, "MCP server state cleared (forced)");
 		} else {
 			if (was_running) {
-				return CreateMCPStatus(true, false, "MCP server stopped");
+				return CreateMCPStatus(true, false, "MCP server stopped", "", "", 0, false,
+				                       terminal.requests_received, terminal.responses_sent, terminal.errors_returned);
 			} else {
 				return CreateMCPStatus(false, false, "MCP server is not running");
 			}
@@ -959,12 +946,15 @@ static void MCPServerStatusFunction(DataChunk &args, ExpressionState &state, Vec
 		try {
 			auto stats = server_manager.GetServerStats();
 			if (!stats.running) {
-				result.SetValue(i, CreateMCPStatus(true, false, "Server is stopped"));
+				result.SetValue(i, CreateMCPStatus(true, false, "Server is stopped", stats.transport, stats.listen,
+				                                   stats.port, stats.background, stats.requests_received,
+				                                   stats.responses_sent, stats.errors_returned));
 				continue;
 			}
 
-			result.SetValue(i, CreateMCPStatus(true, true, stats.status, "", "", 0, true, stats.requests_received,
-			                                   stats.responses_sent, stats.errors_returned));
+			result.SetValue(i, CreateMCPStatus(true, true, stats.status, stats.transport, stats.listen, stats.port,
+			                                   stats.background, stats.requests_received, stats.responses_sent,
+			                                   stats.errors_returned));
 
 		} catch (const std::exception &e) {
 			result.SetValue(i, CreateMCPStatus(false, false, string(e.what())));
@@ -1879,19 +1869,27 @@ static void WebMCPListPageToolsFunction(DataChunk &args, ExpressionState &state,
 // ============================================================================
 
 // PRAGMA mcp_server_start('transport')
+static void ThrowPragmaStartFailure(const Value &status) {
+	const auto &values = StructValue::GetChildren(status);
+	if (!values[0].GetValue<bool>()) {
+		throw InvalidInputException(values[2].ToString());
+	}
+}
+
 static void PragmaMCPServerStartSimple(ClientContext &context, const FunctionParameters &params) {
-	MCPServerStartCore(context, params.values[0].ToString(), "localhost", 0, "{}");
+	ThrowPragmaStartFailure(MCPServerStartCore(context, params.values[0].ToString(), "localhost", 0, "{}"));
 }
 
 // PRAGMA mcp_server_start('transport', 'config_json')
 static void PragmaMCPServerStartConfig(ClientContext &context, const FunctionParameters &params) {
-	MCPServerStartCore(context, params.values[0].ToString(), "localhost", 0, params.values[1].ToString());
+	ThrowPragmaStartFailure(
+	    MCPServerStartCore(context, params.values[0].ToString(), "localhost", 0, params.values[1].ToString()));
 }
 
 // PRAGMA mcp_server_start('transport', 'bind_address', port, 'config_json')
 static void PragmaMCPServerStartFull(ClientContext &context, const FunctionParameters &params) {
-	MCPServerStartCore(context, params.values[0].ToString(), params.values[1].ToString(),
-	                   params.values[2].GetValue<int32_t>(), params.values[3].ToString());
+	ThrowPragmaStartFailure(MCPServerStartCore(context, params.values[0].ToString(), params.values[1].ToString(),
+	                                            params.values[2].GetValue<int32_t>(), params.values[3].ToString()));
 }
 
 // PRAGMA mcp_server_stop()
