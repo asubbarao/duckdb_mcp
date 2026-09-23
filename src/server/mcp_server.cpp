@@ -378,6 +378,7 @@ HTTPServerTransport::RequestHandler MCPServer::MakeHTTPHandler() {
 			MCPMessage request = MCPMessage::FromJSON(request_json);
 			if (request.IsNotification()) {
 				HandleNotification(request);
+				// For the HTTP transport, notifications must not return a JSON-RPC response body.
 				return "";
 			}
 			MCPMessage response = ProcessRequest(request);
